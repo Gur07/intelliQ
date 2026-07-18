@@ -6,24 +6,24 @@ Run with:
     streamlit run app.py
 """
 
-import os
-
-import streamlit as st
 from dotenv import load_dotenv
+import streamlit as st
 
-# Load .env before anything that needs GOOGLE_API_KEY
 load_dotenv()
 
 from agent.graph import build_graph
-from core.database import seed
+from core.cache import cache_stats
+from core.database import db_stats, seed
+from core.rate_limiter import tracker
+from ui.history_store import create_session, list_sessions
 from ui.chat import render_chat
 from ui.sidebar import render_sidebar
 
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="SQLLens — SQL Intelligence",
-    page_icon="🔍",
+    page_title="SQLLens",
+    page_icon="🔎",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -32,53 +32,136 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-        /* Dark background */
-        .stApp { background-color: #0a0f1e; }
+        .stApp {
+            background:
+                radial-gradient(circle at top left, rgba(30,136,229,0.10), transparent 28%),
+                radial-gradient(circle at top right, rgba(14,165,233,0.08), transparent 24%),
+                #f7f9fc;
+            color: #0f172a;
+        }
 
-        /* Hide Streamlit chrome */
         #MainMenu, header, footer { visibility: hidden; }
 
-        /* Top bar */
-        .top-bar {
+        section[data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
+            border-right: 1px solid #dbe5f0;
+        }
+
+        .top-shell {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 10px 0 18px;
-            border-bottom: 1px solid #1e293b;
-            margin-bottom: 16px;
+            gap: 16px;
+            padding: 14px 2px 18px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #dbe5f0;
         }
 
-        /* Sidebar styling */
-        section[data-testid="stSidebar"] {
-            background: #0d1424;
-            border-right: 1px solid #1e293b;
+        .brand-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
         }
 
-        /* Input box */
-        .stChatInput textarea {
-            background: #1e293b !important;
-            border: 1px solid #334155 !important;
-            color: #e2e8f0 !important;
-            border-radius: 12px !important;
+        .brand-mark {
+            width: 38px;
+            height: 38px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #1e88e5, #0ea5e9);
+            color: white;
+            font-size: 18px;
+            box-shadow: 0 10px 24px rgba(30,136,229,0.25);
         }
 
-        /* Buttons */
+        .brand-title {
+            font-size: 18px;
+            font-weight: 800;
+            color: #0f172a;
+            line-height: 1.1;
+        }
+
+        .brand-subtitle {
+            font-size: 11px;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            margin-top: 2px;
+        }
+
+        .chip-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .metric-chip {
+            min-width: 96px;
+            padding: 10px 14px;
+            border-radius: 16px;
+            border: 1px solid #d7e3f2;
+            background: rgba(255,255,255,0.84);
+            box-shadow: 0 8px 24px rgba(15,23,42,0.05);
+        }
+
+        .metric-label {
+            font-size: 10px;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.10em;
+            margin-bottom: 4px;
+        }
+
+        .metric-value {
+            font-size: 18px;
+            font-weight: 800;
+            color: #1e88e5;
+        }
+
+        .section-title {
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: #475569;
+            margin: 8px 0 10px;
+        }
+
         .stButton > button {
-            background: #1e293b;
-            color: #e2e8f0;
-            border: 1px solid #334155;
-            border-radius: 8px;
-        }
-        .stButton > button:hover {
-            background: #334155;
-            border-color: #1E88E5;
+            border-radius: 12px;
+            border: 1px solid #c8d7ea;
+            background: white;
+            color: #0f172a;
+            font-weight: 600;
         }
 
-        /* Metrics */
+        .stButton > button:hover {
+            border-color: #1e88e5;
+            color: #1e88e5;
+            background: #eff6ff;
+        }
+
+        .stChatInput textarea {
+            border-radius: 18px !important;
+            border: 1px solid #cbd8ea !important;
+            background: white !important;
+            color: #0f172a !important;
+            box-shadow: 0 10px 28px rgba(15,23,42,0.08) !important;
+        }
+
+        [data-testid="stMetric"] {
+            border-radius: 16px;
+            background: rgba(255,255,255,0.85);
+            border: 1px solid #dde7f3;
+            padding: 10px 12px;
+        }
+
         [data-testid="stMetricValue"] {
-            font-size: 18px !important;
-            font-weight: 700 !important;
-            color: #1E88E5 !important;
+            color: #0f172a !important;
+            font-weight: 800 !important;
         }
     </style>
     """,
@@ -89,35 +172,56 @@ st.markdown(
 # ── One-time startup ──────────────────────────────────────────────────────────
 @st.cache_resource
 def startup():
-    """Seed DB and build graph exactly once per Streamlit session."""
     seed()
     return build_graph()
 
 
 graph = startup()
 
+if "current_session_id" not in st.session_state:
+    sessions = list_sessions()
+    if sessions:
+        st.session_state["current_session_id"] = sessions[0]["session_id"]
+        st.session_state["current_thread_id"] = sessions[0]["thread_id"]
+    else:
+        session = create_session()
+        st.session_state["current_session_id"] = session["session_id"]
+        st.session_state["current_thread_id"] = session["thread_id"]
 
-# ── Top bar ───────────────────────────────────────────────────────────────────
+
+sessions = list_sessions()
+summary = tracker.summary()
+history_queries = sum(int(s.get("turn_count") or 0) for s in sessions)
+cache_summary = cache_stats()
+
 st.markdown(
-    """
-    <div class="top-bar">
-        <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:20px">🔍</span>
-            <span style="font-weight:700;font-size:16px;color:#e2e8f0">SQLLens</span>
-            <span style="
-                background:#22c55e18;border:1px solid #22c55e44;
-                color:#22c55e;font-size:10px;font-weight:600;
-                border-radius:12px;padding:2px 8px;letter-spacing:.5px">
-                ● OPTIMAL
-            </span>
+    f"""
+    <div class="top-shell">
+        <div class="brand-row">
+            <div class="brand-mark">🔎</div>
+            <div>
+                <div class="brand-title">SQLLens</div>
+                <div class="brand-subtitle">SQL Intelligence workspace</div>
+            </div>
         </div>
-        <div style="font-size:12px;color:#64748b">Gemini 2.5 Flash · SQLite</div>
+        <div class="chip-row">
+            <div class="metric-chip">
+                <div class="metric-label">Hit rate</div>
+                <div class="metric-value">{int(summary["cached"] / summary["total"] * 100) if summary["total"] else 0}%</div>
+            </div>
+            <div class="metric-chip">
+                <div class="metric-label">Latency</div>
+                <div class="metric-value">{summary["avg_ms"]}ms</div>
+            </div>
+            <div class="metric-chip">
+                <div class="metric-label">Queries</div>
+                <div class="metric-value">{history_queries}</div>
+            </div>
+        </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-
-# ── Layout ────────────────────────────────────────────────────────────────────
-render_sidebar()
+render_sidebar(sessions=sessions, db_summary=db_stats(), cache_summary=cache_summary)
 render_chat(graph)

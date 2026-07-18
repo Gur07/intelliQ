@@ -1,61 +1,25 @@
 """
 ui/chat.py
 Renders the main chat panel:
-  - Conversation history (user + assistant bubbles)
-  - Execution trace block (node steps)
+  - Conversation history
+  - Execution trace block
   - SQL block display
+  - Result table display
   - Input box at the bottom
 """
 
-import json
 import streamlit as st
 
 from core.schemas import RESET
-from core.rate_limiter import tracker
-from ui.components import cache_badge, execution_trace, sql_block
-
-
-# Suggested starter queries shown on an empty chat
-EXAMPLE_QUERIES = [
-    "Show me the top 10 customers by revenue",
-    "Which product category performs best and why?",
-    "Forecast revenue for the next 7 days",
-    "Compare sales across all regions this year",
-]
-
-
-def _render_user_bubble(text: str):
-    st.markdown(
-        f"""
-        <div style="display:flex;justify-content:flex-end;margin:8px 0">
-            <div style="
-                background:#1E88E5;color:white;
-                border-radius:18px 18px 4px 18px;
-                padding:10px 16px;max-width:70%;font-size:14px;
-                line-height:1.5">
-                {text}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _render_assistant_bubble(content: str):
-    st.markdown(
-        f"""
-        <div style="display:flex;justify-content:flex-start;margin:8px 0">
-            <div style="
-                background:#1e293b;color:#e2e8f0;
-                border-radius:18px 18px 18px 4px;
-                padding:10px 16px;max-width:80%;font-size:14px;
-                line-height:1.6">
-                {content}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+from ui.components import (
+    cache_badge,
+    execution_trace,
+    render_json_preview,
+    render_result_table,
+    section_title,
+    sql_block,
+)
+from ui.history_store import load_turns, save_turn
 
 
 def _build_trace_steps(turn: dict) -> list:
@@ -65,7 +29,7 @@ def _build_trace_steps(turn: dict) -> list:
     qt       = turn.get("query_type", "")
     sim      = turn.get("similarity", 0.0)
 
-    steps.append(f"Cache lookup: similarity={sim:.3f}  →  {decision}")
+    steps.append(f"Cache lookup: similarity={sim:.3f} -> {decision}")
 
     if decision == "EXACT":
         steps.append("Serving cached response (no LLM engine call needed)")
@@ -95,93 +59,99 @@ def _build_trace_steps(turn: dict) -> list:
     return steps
 
 
+def _render_turn(turn: dict):
+    with st.chat_message("user"):
+        st.markdown(turn["user"])
+
+    with st.chat_message("assistant"):
+        st.markdown(turn["response"])
+
+        steps = _build_trace_steps(turn)
+        if steps:
+            section_title("Execution trace")
+            execution_trace(steps)
+
+        if turn.get("cache_decision"):
+            cache_badge(turn["cache_decision"], turn.get("similarity", 0.0))
+
+        sql_query = turn.get("sql_query")
+        if sql_query:
+            section_title("Generated SQL")
+            sql_block(sql_query)
+
+        result_rows = turn.get("sql_result") or []
+        if not result_rows and turn.get("cache_hit"):
+            result_rows = turn["cache_hit"].get("execution_result") or []
+
+        if result_rows:
+            section_title("Result table")
+            if isinstance(result_rows, list):
+                render_result_table(result_rows)
+            else:
+                render_json_preview(result_rows, label="Result payload")
+
+        if turn.get("cache_hit"):
+            with st.expander("Cached answer details"):
+                st.write(f"Cache decision: {turn.get('cache_decision', 'MISS')}")
+                st.write(f"Similarity: {turn.get('similarity', 0.0):.2f}")
+                render_json_preview(turn["cache_hit"], label="Cached payload")
+
+
 def render_chat(graph):
     """Main chat rendering function. Called from app.py."""
+    session_id = st.session_state.get("current_session_id")
+    if not session_id:
+        st.info("Create a new chat to begin.")
+        return
 
-    # ── Empty state — show example queries ───────────────────────────────────
-    if not st.session_state.get("messages"):
+    turns = load_turns(session_id)
+    if not turns:
         st.markdown(
             """
-            <div style="text-align:center;padding:40px 0 20px">
-                <div style="font-size:28px;font-weight:700;margin-bottom:8px">
+            <div style="padding:26px 0 18px;max-width:760px">
+                <div style="font-size:30px;font-weight:800;color:#0f172a;margin-bottom:10px">
                     Ask SQLLens about your data
                 </div>
-                <div style="color:#64748b;font-size:14px">
-                    Natural language → SQL → Insight
+                <div style="font-size:15px;line-height:1.7;color:#475569">
+                    Start with a business question. SQLLens will generate the SQL, execute it,
+                    and show the reasoning, result rows, and final answer in one place.
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        cols = st.columns(2)
-        for i, q in enumerate(EXAMPLE_QUERIES):
-            if cols[i % 2].button(q, use_container_width=True, key=f"eg_{i}"):
-                st.session_state["pending_query"] = q
-                st.rerun()
 
-    # ── Conversation history ──────────────────────────────────────────────────
-    for turn in st.session_state.get("messages", []):
-        _render_user_bubble(turn["user"])
+    for turn in turns:
+        _render_turn(turn)
 
-        # Execution trace
-        if turn.get("cache_decision"):
-            steps = _build_trace_steps(turn)
-            execution_trace(steps)
+    st.markdown("<div style='height:110px'></div>", unsafe_allow_html=True)
 
-        # Cache badge
-        if turn.get("cache_decision"):
-            sim = turn.get("similarity", 0.0)
-            cache_badge(turn["cache_decision"], sim)
-
-        # SQL block
-        if turn.get("sql_query") and turn.get("cache_decision") != "EXACT":
-            sql_block(turn["sql_query"])
-
-        # Assistant response
-        _render_assistant_bubble(turn["response"])
-
-    # ── Input box (pinned to bottom) ─────────────────────────────────────────
-    st.markdown("<div style='height:80px'></div>", unsafe_allow_html=True)
-
-    with st.container():
-        col_input, col_btn = st.columns([9, 1])
-
-        pending = st.session_state.pop("pending_query", None)
-
-        with col_input:
-            user_input = st.chat_input(
-                "Ask SQLLens about your data...",
-                key="chat_input",
-            )
-
-        # Handle both typed input and example-button clicks
-        query = user_input or pending
-        if query:
-            _handle_query(query, graph)
+    user_input = st.chat_input("Ask SQLLens about your data...")
+    if user_input:
+        _handle_query(user_input, graph)
 
 
 def _handle_query(query: str, graph):
     """Invoke the agent graph and store the result in session state."""
-    thread_id = st.session_state.get("thread_id", "main")
-    config    = {"configurable": {"thread_id": thread_id}}
+    session_id = st.session_state.get("current_session_id")
+    thread_id = st.session_state.get("current_thread_id") or session_id or "main"
+    config = {"configurable": {"thread_id": thread_id}}
 
     with st.spinner("Thinking..."):
         result = graph.invoke({"user_query": query, **RESET}, config=config)
 
-    # Gather metadata for trace rendering
     turn = {
-        "user":           query,
-        "response":       result.get("final_response", "No response."),
+        "user": query,
+        "response": result.get("final_response", "No response."),
         "cache_decision": result.get("cache_decision"),
-        "query_type":     result.get("query_type"),
-        "sql_query":      result.get("sql_query"),
-        "sql_result":     result.get("sql_result"),
-        "similarity":     result.get("cache_hit", {}).get("similarity", 0.0) if result.get("cache_hit") else 0.0,
+        "query_type": result.get("query_type"),
+        "sql_query": result.get("sql_query") or result.get("cache_hit", {}).get("generated_sql"),
+        "sql_result": result.get("sql_result"),
+        "similarity": result.get("cache_hit", {}).get("similarity", 0.0) if result.get("cache_hit") else 0.0,
+        "cache_hit": result.get("cache_hit"),
     }
 
-    if "messages" not in st.session_state:
-        st.session_state["messages"] = []
-    st.session_state["messages"].append(turn)
-    st.session_state["total_queries"] = st.session_state.get("total_queries", 0) + 1
+    if session_id:
+        save_turn(session_id, turn)
 
     st.rerun()

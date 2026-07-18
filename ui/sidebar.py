@@ -1,165 +1,129 @@
 """
 ui/sidebar.py
 Renders the left sidebar:
-  - App header + stats (hit rate, latency, queries)
-  - Schema Explorer (collapsible per table)
-  - Cache Stats panel
-  - LLM Call Log
+  - Chat session loader
+  - Database and cache summary
+  - Session controls
 """
 
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
 from core.cache import cache_stats, get_all_cache_entries
 from core.database import db_stats
 from core.rate_limiter import tracker
-from ui.components import stat_badge
+from ui.components import section_title
+from ui.history_store import create_session, delete_session, list_sessions, rename_session
 
 
-def render_sidebar():
+def _set_current_session(session: dict):
+    st.session_state["current_session_id"] = session["session_id"]
+    st.session_state["current_thread_id"] = session["thread_id"]
+
+
+def _new_chat():
+    session = create_session()
+    _set_current_session(session)
+
+
+def render_sidebar(sessions=None, db_summary=None, cache_summary=None):
+    if sessions is None:
+        sessions = list_sessions()
+    if db_summary is None:
+        db_summary = db_stats()
+    if cache_summary is None:
+        cache_summary = cache_stats()
+
     with st.sidebar:
-        # ── App header ────────────────────────────────────────────────────────
-        st.markdown(
-            """
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-                <div style="
-                    background:#1E88E5;border-radius:8px;
-                    width:36px;height:36px;display:flex;
-                    align-items:center;justify-content:center;
-                    font-size:18px">🔍</div>
-                <div>
-                    <div style="font-weight:700;font-size:16px">SQLLens</div>
-                    <div style="font-size:11px;color:#888">SQL INTELLIGENCE</div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.divider()
+        section_title("Chats")
+        st.button("+ New chat", use_container_width=True, on_click=_new_chat)
 
-        # ── Live metrics ──────────────────────────────────────────────────────
-        summary = tracker.summary()
-        calls   = tracker.get_calls()
-        cstats  = cache_stats()
+        if not sessions:
+            st.caption("No saved chats yet. Start a conversation to create the first one.")
+        else:
+            session_map = {s["session_id"]: s for s in sessions}
 
-        total_q = st.session_state.get("total_queries", 0)
-        cached  = summary.get("cached", 0)
-        hit_rate = f"{int(cached / total_q * 100)}%" if total_q else "—"
+            def _label(session_id: str) -> str:
+                session = session_map[session_id]
+                return f"{session['title']}  ·  {int(session['turn_count'])} turns"
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Hit Rate",  hit_rate)
-        col2.metric("Avg ms",    f"{summary['avg_ms']}")
-        col3.metric("Queries",   total_q)
+            current_id = st.session_state.get("current_session_id")
+            if current_id not in session_map:
+                current_id = sessions[0]["session_id"]
+                _set_current_session(session_map[current_id])
 
-        st.divider()
+            selected = st.selectbox(
+                "Saved conversations",
+                options=[s["session_id"] for s in sessions],
+                index=[s["session_id"] for s in sessions].index(current_id),
+                format_func=_label,
+                label_visibility="collapsed",
+            )
+            if selected != current_id:
+                _set_current_session(session_map[selected])
+                st.rerun()
 
-        # ── Schema Explorer ───────────────────────────────────────────────────
-        st.markdown("**SCHEMA EXPLORER**")
-        dstats = db_stats()
+            active = session_map[st.session_state["current_session_id"]]
+            cols = st.columns(2)
+            cols[0].metric("Turns", int(active["turn_count"]))
+            cols[1].metric("Updated", pd.to_datetime(active["updated_at"], unit="s").strftime("%b %d"))
 
-        tables = {
-            "customers": {
-                "rows":    dstats["customers"],
-                "columns": [
-                    ("customer_id", "INT"),
-                    ("name",        "VARCHAR"),
-                    ("region",      "VARCHAR"),
-                    ("signup_date", "DATE"),
-                ],
-            },
-            "products": {
-                "rows":    dstats["products"],
-                "columns": [
-                    ("product_id",   "INT"),
-                    ("product_name", "VARCHAR"),
-                    ("category",     "VARCHAR"),
-                    ("unit_price",   "FLOAT"),
-                ],
-            },
-            "sales": {
-                "rows":    dstats["sales"],
-                "columns": [
-                    ("sale_id",     "INT"),
-                    ("customer_id", "INT"),
-                    ("product_id",  "INT"),
-                    ("quantity",    "INT"),
-                    ("sale_date",   "DATE"),
-                    ("revenue",     "FLOAT"),
-                ],
-            },
-        }
-
-        for table_name, meta in tables.items():
-            with st.expander(f"📋 {table_name}  ({meta['rows']:,} rows)"):
-                for col_name, col_type in meta["columns"]:
-                    st.markdown(
-                        f"""
-                        <div style="display:flex;justify-content:space-between;
-                                    padding:2px 0;font-size:12px">
-                            <span style="color:#e2e8f0">{col_name}</span>
-                            <span style="color:#64748b">{col_type}</span>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+            with st.expander("Chat actions"):
+                new_title = st.text_input("Rename current chat", value=active["title"], key="rename_chat_input")
+                if st.button("Save title", use_container_width=True):
+                    rename_session(active["session_id"], new_title.strip() or active["title"])
+                    st.rerun()
+                if len(sessions) > 1 and st.button("Delete current chat", use_container_width=True):
+                    delete_session(active["session_id"])
+                    remaining = list_sessions()
+                    if remaining:
+                        _set_current_session(remaining[0])
+                    else:
+                        _new_chat()
+                    st.rerun()
 
         st.divider()
 
-        # ── Cache stats ───────────────────────────────────────────────────────
-        st.markdown("**CACHE**")
+        section_title("Database")
+        st.metric("Customers", db_summary["customers"])
+        st.metric("Products", db_summary["products"])
+        st.metric("Sales rows", db_summary["sales"])
+
+        st.divider()
+
+        section_title("Cache")
         col1, col2 = st.columns(2)
-        col1.metric("Entries",    cstats["entries"])
-        col2.metric("Total Hits", cstats["total_hits"])
-
-        entries = get_all_cache_entries()
-        if entries:
-            with st.expander("Browse cache entries"):
-                for e in entries[:10]:
-                    st.markdown(
-                        f"""
-                        <div style="
-                            border:1px solid #1e293b;border-radius:6px;
-                            padding:8px;margin-bottom:6px;font-size:12px">
-                            <div style="color:#e2e8f0;margin-bottom:2px">
-                                {e['user_query'][:55]}{'…' if len(e['user_query'])>55 else ''}
-                            </div>
-                            <div style="color:#64748b">
-                                {e['query_type']} · {e['access_count']} hits · {e['exec_ms']}ms
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+        col1.metric("Entries", cache_summary["entries"])
+        col2.metric("Hits", cache_summary["total_hits"])
 
         st.divider()
 
-        # ── LLM call log ──────────────────────────────────────────────────────
-        st.markdown("**LLM CALL LOG**")
+        section_title("Activity")
+        calls = tracker.get_calls()
         if calls:
-            icons = {"ok": "✅", "error": "❌", "blocked": "🚫", "cache": "⚡"}
-            for c in reversed(calls[-8:]):
-                icon = icons.get(c["status"], "🔹")
+            for call in reversed(calls[-8:]):
                 st.markdown(
-                    f"""
-                    <div style="font-size:11px;padding:3px 0;
-                                border-bottom:1px solid #1e293b;">
-                        {icon} <b>{c['node']}</b>
-                        <span style="color:#64748b;float:right">{c['latency_ms']}ms</span>
-                    </div>
-                    """,
+                    f"<div style='font-size:11px;padding:4px 0;border-bottom:1px solid #dde5f1'>"
+                    f"<b>{call['node']}</b>"
+                    f"<span style='float:right;color:#64748b'>{call['latency_ms']}ms</span>"
+                    f"</div>",
                     unsafe_allow_html=True,
                 )
         else:
-            st.caption("No calls yet.")
+            st.caption("No backend activity yet.")
 
         st.divider()
 
-        # ── Controls ──────────────────────────────────────────────────────────
-        st.markdown("**SYSTEM**")
-        if st.button("⚙ Settings", use_container_width=True):
-            st.session_state["show_settings"] = True
-        if st.button("🗑 Clear history", use_container_width=True):
-            st.session_state["messages"] = []
-            st.session_state["total_queries"] = 0
-            tracker.reset()
-            st.rerun()
+        section_title("Cache browser")
+        entries = get_all_cache_entries()
+        if entries:
+            for entry in entries[:6]:
+                st.markdown(
+                    f"<div style='border:1px solid #dbe5f0;border-radius:12px;padding:8px 10px;margin-bottom:8px;background:white'>"
+                    f"<div style='font-size:12px;color:#0f172a;margin-bottom:2px'>{entry['user_query'][:56]}{'...' if len(entry['user_query']) > 56 else ''}</div>"
+                    f"<div style='font-size:11px;color:#64748b'>{entry['query_type']} · {entry['access_count']} hits · {entry['exec_ms']}ms</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.caption("No cache entries yet.")
