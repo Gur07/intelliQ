@@ -9,12 +9,12 @@ IntelliQ is an **agentic AI system** that lets non-technical users query a relat
 ## 📸 UI Preview
 
 <!-- Add screenshot here -->
+![Screenshot](images/screenshot1.png)
 
-`/images/ui_main.png`
 
 <!-- Add execution trace screenshot here -->
+![Screenshot](images/screenshot2.png)
 
-`/images/ui_trace.png`
 
 ---
 
@@ -24,27 +24,7 @@ Most text-to-SQL systems are a single LLM call: prompt in, SQL out. IntelliQ is 
 
 ### The Agent Graph
 
-```
-START
-  │
-  ▼
-embed_node              ← sentence-transformer embedding, cache search
-  │
-  ▼
-cache_classify_node     ← ONE LLM call: decides EXACT / PARTIAL / MISS
-  │                       AND classifies query type simultaneously
-  ├── EXACT ──────────────────────────────────────────┐
-  │                                                    ▼
-  ├── PARTIAL / MISS                          format_response_node
-  │       │                                           │
-  │       ▼                                           ▼
-  │   sql_engine_node                        cache_write_node
-  │   (generate or amend SQL)                        │
-  │       │                                          END
-  │       ├── analytical → analytical_engine_node
-  │       ├── predictive → predictive_engine_node
-  │       └── sql ──────────────────────────────────►┘
-```
+![Graph](images/graph.png)
 
 Every node has a single, explicit responsibility. Nodes are stateless functions — all shared context flows through a typed `State` object, making the system easy to inspect, test, and extend.
 
