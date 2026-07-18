@@ -38,7 +38,7 @@ def section_title(title: str):
 
 def execution_trace(steps: list):
     """
-    Render the SQLLens-style execution trace box.
+    Render the IntelliQ-style execution trace box.
     steps: list of strings, each prefixed with an emoji by the caller.
     """
     if not steps:

@@ -110,10 +110,10 @@ def render_chat(graph):
             """
             <div style="padding:26px 0 18px;max-width:760px">
                 <div style="font-size:30px;font-weight:800;color:#0f172a;margin-bottom:10px">
-                    Ask SQLLens about your data
+                    Ask IntelliQ about your data
                 </div>
                 <div style="font-size:15px;line-height:1.7;color:#475569">
-                    Start with a business question. SQLLens will generate the SQL, execute it,
+                    Start with a business question. IntelliQ will generate the SQL, execute it,
                     and show the reasoning, result rows, and final answer in one place.
                 </div>
             </div>
@@ -126,7 +126,7 @@ def render_chat(graph):
 
     st.markdown("<div style='height:110px'></div>", unsafe_allow_html=True)
 
-    user_input = st.chat_input("Ask SQLLens about your data...")
+    user_input = st.chat_input("Ask IntelliQ about your data...")
     if user_input:
         _handle_query(user_input, graph)
 

@@ -1,6 +1,6 @@
 """
 app.py
-Streamlit entry point for SQLLens.
+Streamlit entry point for IntelliQ.
 
 Run with:
     streamlit run app.py
@@ -22,7 +22,7 @@ from ui.sidebar import render_sidebar
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="SQLLens",
+    page_title="IntelliQ",
     page_icon="🔎",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -40,7 +40,12 @@ st.markdown(
             color: #0f172a;
         }
 
-        #MainMenu, header, footer { visibility: hidden; }
+        #MainMenu, footer { visibility: hidden; }
+
+        header[data-testid="stHeader"] {
+            background: transparent;
+            box-shadow: none;
+        }
 
         section[data-testid="stSidebar"] {
             background: linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
@@ -200,7 +205,7 @@ st.markdown(
         <div class="brand-row">
             <div class="brand-mark">🔎</div>
             <div>
-                <div class="brand-title">SQLLens</div>
+                <div class="brand-title">IntelliQ</div>
                 <div class="brand-subtitle">SQL Intelligence workspace</div>
             </div>
         </div>
